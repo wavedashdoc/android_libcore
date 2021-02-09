@@ -20,8 +20,6 @@ package libcore.java.net;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.net.BindException;
 import java.net.ConnectException;
 import java.net.Inet4Address;
@@ -39,7 +37,6 @@ import java.net.UnknownHostException;
 import java.nio.channels.IllegalBlockingModeException;
 import java.nio.channels.SocketChannel;
 import java.security.Permission;
-import java.util.concurrent.atomic.AtomicReference;
 import libcore.junit.util.ResourceLeakageDetector.DisableResourceLeakageDetection;
 import tests.support.Support_Configuration;
 
@@ -1269,37 +1266,39 @@ public class OldSocketTest extends OldSocketTestCase {
         }
     }
 
+    @DisableResourceLeakageDetection(
+            why = "Strange threading behavior causes resource leak",
+            bug = "31820278")
     public void test_connectLjava_net_SocketAddressI_setSOTimeout() throws Exception {
-        final AtomicReference<Exception> exceptionRef = new AtomicReference<>();
-
         class SocketConnector extends Thread {
-            private final int timeout;
-            private final Socket theSocket;
-            private final SocketAddress address;
 
-            @Override
+            int timeout = 0;
+
+            Socket theSocket = null;
+
+            SocketAddress address = null;
+
             public void run() {
                 try {
                     theSocket.connect(address, timeout);
                 } catch (Exception e) {
-                    exceptionRef.set(e);
                 }
+
+                return;
             }
 
-            private SocketConnector(int timeout, Socket theSocket, SocketAddress address) {
+            public SocketConnector(int timeout, Socket theSocket,
+                    SocketAddress address) {
                 this.timeout = timeout;
                 this.theSocket = theSocket;
                 this.address = address;
             }
         }
 
-        // Now try to set options while we are connecting
-        try (final Socket theSocket = new Socket()) {
-            // Force SocketImpl creation to prevent race between connect() and setSoTimeout()
-            // creating it. b/144258500
-            theSocket.getSoTimeout();
-            final SocketConnector connector
-                = new SocketConnector(5000, theSocket, UNREACHABLE_ADDRESS);
+        // now try to set options while we are connecting
+        SocketAddress nonReachableAddress = UNREACHABLE_ADDRESS;
+        try (Socket theSocket = new Socket()) {
+            SocketConnector connector = new SocketConnector(5000, theSocket, nonReachableAddress);
             connector.start();
             theSocket.setSoTimeout(1000);
             Thread.sleep(10);
@@ -1309,20 +1308,9 @@ public class OldSocketTest extends OldSocketTestCase {
             theSocket.setSoTimeout(2000);
             assertTrue("Socket option not set during connect: 50 ",
                     Math.abs(2000 - theSocket.getSoTimeout()) <= 10);
-            connector.join();
-            Exception e = exceptionRef.get();
-            if (!(e instanceof SocketTimeoutException)) {
-                fail(printStackTraceToString(e));
-            }
+            Thread.sleep(5000);
         }
     }
-
-    private String printStackTraceToString(Throwable throwable) {
-        StringWriter writer = new StringWriter();
-        throwable.printStackTrace(new PrintWriter(writer));
-        return writer.toString();
-    }
-
 
     public void test_isInputShutdown() throws IOException {
         Socket theSocket = new Socket();
